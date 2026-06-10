@@ -99,6 +99,10 @@ const KEY_SPECS: Record<string, KeySpec> = {
   embeddingBatchSize: { target: 'embeddingBatchSize', kind: 'numeric-string' },
   embeddingSubBatchSize: { target: 'embeddingSubBatchSize', kind: 'numeric-string' },
   embeddingDevice: { target: 'embeddingDevice', kind: 'string' },
+  // Auth token is intentionally CLI/env-only (no embeddingsAuthToken key) to avoid secrets in committed .gitnexusrc.
+  embeddingsBaseurl: { target: 'embeddingsBaseurl', kind: 'string' },
+  embeddingsModel: { target: 'embeddingsModel', kind: 'string' },
+  embeddingsDims: { target: 'embeddingsDims', kind: 'numeric-string' },
 };
 
 /** Top-level container key for the nested form; not itself an `AnalyzeOptions` field. */
