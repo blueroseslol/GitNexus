@@ -123,7 +123,7 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 ### MCP Setup
 
-`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once.
+`gitnexus setup` auto-detects your editors and writes the correct global MCP config. You only need to run it once. To configure only selected integrations, pass `--coding-agent`/`-c` with a comma-separated list or repeat the option, for example `gitnexus setup -c cursor,codex`.
 
 ### Editor Support
 
@@ -224,7 +224,7 @@ args = ["-y", "gitnexus@latest", "mcp"]
 ### CLI Commands
 
 ```bash
-gitnexus setup                   # Configure MCP for your editors (one-time)
+gitnexus setup                   # Configure MCP for detected editors (one-time; use -c to select)
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (add --force to apply)
 gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
@@ -360,7 +360,7 @@ It is opt-in and a no-op without `UNDERSTAND_QUICKLY_TOKEN` — a fine-grained G
 | `group_query`     | Search execution flows across all repos in a group               | —            |
 | `group_status`    | Check staleness of repos in a group                              | —            |
 
-> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({query: "auth", repo: "my-app"})`.
+> When only one repo is indexed, the `repo` parameter is optional. With multiple repos, specify which one: `query({search_query: "auth", repo: "my-app"})`.
 
 **Resources** for instant context:
 
@@ -703,6 +703,8 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
+**Control flow (CFG, opt-in `--pdg`)** — per-function control-flow graphs (`BasicBlock` nodes + `CFG` edges) feeding the PDG/taint substrate, currently **TypeScript & JavaScript** (#2081 M1); other languages planned. Off by default.
+
 ---
 
 ## Tool Examples
@@ -736,7 +738,7 @@ gitnexus impact get_embeddings --uid "Function:src/embed.py:get_embeddings"  # e
 ### Process-Grouped Search
 
 ```
-query({query: "authentication middleware"})
+query({search_query: "authentication middleware"})
 
 processes:
   - summary: "LoginFlow"
