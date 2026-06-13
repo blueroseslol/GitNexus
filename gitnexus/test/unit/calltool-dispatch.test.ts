@@ -307,6 +307,44 @@ describe('LocalBackend.callTool', () => {
     expect(result).toHaveProperty('definitions');
   });
 
+  it('checks cycles using only non-synthetic import edges', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      { source: 'src/a.ts', target: 'src/b.ts' },
+      { source: 'src/b.ts', target: 'src/a.ts' },
+    ]);
+
+    const result = await backend.callTool('check', { cycles: true });
+
+    expect(result).toEqual({
+      status: 'cycles_found',
+      cycleCount: 1,
+      cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
+    });
+    const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
+    expect(query).toContain("r.reason <> 'markdown-link'");
+    expect(query).toContain('LIMIT 100001');
+  });
+
+  it('uses the advertised cycles default when check arguments are omitted', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await expect(backend.callTool('check', undefined)).resolves.toEqual({
+      status: 'clean',
+      cycleCount: 0,
+      cycles: [],
+    });
+  });
+
+  it('fails closed when the import-edge safety limit is reached', async () => {
+    (executeParameterized as any).mockResolvedValue({ length: 100_001 });
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      error: 'Import graph exceeds the 100000 edge safety limit.',
+      truncated: true,
+    });
+  });
+
   it('includes FTS-unavailable warning when ftsAvailable is false (#1403)', async () => {
     const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
     vi.mocked(searchFTSFromLbug).mockResolvedValueOnce({ results: [], ftsAvailable: false });
@@ -2178,5 +2216,116 @@ describe('cypher result formatting', () => {
     });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Syntax error');
+  });
+});
+
+// ─── resolveRepo branch scope (#2106) ────────────────────────────────
+
+describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
+  let backend: LocalBackend;
+
+  const BRANCH_ENTRY = {
+    name: 'multi',
+    path: path.join(os.tmpdir(), 'gnx-2106-multi'),
+    storagePath: path.join(os.tmpdir(), 'gnx-2106-multi', '.gitnexus'),
+    indexedAt: '2026-06-10T12:00:00Z',
+    lastCommit: 'mainsha',
+    branch: 'main',
+    branches: [{ branch: 'feature/x', indexedAt: '2026-06-10T13:00:00Z', lastCommit: 'featsha' }],
+    stats: { files: 1, nodes: 1 },
+  };
+
+  const flatLbug = path.join(BRANCH_ENTRY.storagePath, 'lbug');
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    (listRegisteredRepos as any).mockResolvedValue([BRANCH_ENTRY]);
+    await backend.init();
+  });
+
+  it('no branch param resolves the flat/primary lbug', async () => {
+    const handle = await backend.resolveRepo('multi');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('the primary branch name resolves the flat lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'main');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('an indexed non-primary branch resolves a branches/<slug> lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).not.toBe(flatLbug);
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+    expect(path.basename(handle.lbugPath)).toBe('lbug');
+    // The branch handle reports the branch's own commit, not the primary's.
+    expect(handle.lastCommit).toBe('featsha');
+  });
+
+  it('an un-indexed branch throws a clear error', async () => {
+    await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(/not indexed/i);
+  });
+
+  it('a legacy entry with no top-level branch still routes an indexed branch', async () => {
+    // Pre-#2106 entries have no `branch` field; branch routing must still work
+    // off branches[] alone.
+    (listRegisteredRepos as any).mockResolvedValue([{ ...BRANCH_ENTRY, branch: undefined }]);
+    await backend.init();
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+  });
+
+  it('a legacy entry resolves --branch <primary> via the flat meta (#2106 R4)', async () => {
+    // Pre-#2106 flat index: registry entry has no `branch`/`branches`, but the
+    // flat meta.json records the primary. `--branch <primary>` must resolve to
+    // the flat handle (read from meta), while an unindexed branch still errors.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2106-legacy-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'abc', indexedAt: 'now', branch: 'main' }),
+    );
+    try {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { name: 'legacy', path: dir, storagePath, indexedAt: 'now', lastCommit: 'abc' },
+      ]);
+      await backend.init();
+      const handle = await backend.resolveRepo('legacy', 'main');
+      expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
+      await expect(backend.resolveRepo('legacy', 'feature')).rejects.toThrow(/not indexed/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('callTool threads the branch param through resolveRepo (un-indexed branch errors)', async () => {
+    // If callTool dropped `branch` from repoParams, this would resolve the flat
+    // handle and NOT throw — so the rejection proves the param is threaded.
+    await expect(backend.callTool('query', { repo: 'multi', branch: 'nope' })).rejects.toThrow(
+      /not indexed/i,
+    );
+  });
+
+  it('callTool resolves an indexed branch without error', async () => {
+    const res = await backend.callTool('query', {
+      query: 'auth',
+      repo: 'multi',
+      branch: 'feature/x',
+    });
+    expect(res).toBeDefined();
+    expect(res).not.toHaveProperty('error');
+  });
+
+  it('evicts an opened branch pool when the repo leaves the registry (#2106 R3)', async () => {
+    // Open the branch pool via a tool call (ensureInitialized records its key).
+    await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
+    lbugMocks.closeLbug.mockClear();
+    // Unregister the repo, then trigger a refresh (init re-reads the registry).
+    (listRegisteredRepos as any).mockResolvedValue([]);
+    await backend.init();
+    const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
+    expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
   });
 });

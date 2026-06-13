@@ -14,12 +14,21 @@ const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 const program = new Command();
 
+function collectCodingAgents(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), ...value.split(',')];
+}
+
 program.name('gitnexus').description('GitNexus local CLI and MCP server').version(pkg.version);
 
 program
   .command('setup')
   .description(
     'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+  )
+  .option(
+    '-c, --coding-agent <agents>',
+    'Configure only these coding agents (comma-separated or repeatable)',
+    collectCodingAgents,
   )
   .action(createLazyAction(() => import('./setup.js'), 'setupCommand'));
 
@@ -53,9 +62,20 @@ program
   )
   .option('--skip-agents-md', 'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md')
   .option(
+    '--pdg',
+    'Build the control-flow-graph / PDG substrate (BasicBlock nodes + CFG edges) ' +
+      'for supported languages. Opt-in; off by default. (#2081 M1)',
+  )
+  .option(
     '--default-branch <branch>',
     'Default branch used in the generated regression-compare example (base_ref). ' +
       'Falls back to .gitnexusrc, then auto-detected origin/HEAD, then "main".',
+  )
+  .option(
+    '--branch <name>',
+    'Index the working tree under a specific branch slot (multi-branch indexing). ' +
+      'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
+      'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
@@ -122,7 +142,21 @@ program
 
 program
   .command('mcp')
-  .description('Start MCP server (stdio) — serves all indexed repos')
+  .description(
+    'Start MCP server. Default: stdio. Use --http for a remote HTTP server ' +
+      '(Streamable HTTP at POST /mcp + legacy SSE at GET /sse, POST /messages).',
+  )
+  .option('--http', 'Serve MCP over HTTP instead of stdio (for remote clients)')
+  .option('-p, --port <port>', 'HTTP port (only with --http). Default: 3000', '3000')
+  .option(
+    '--host <host>',
+    'HTTP bind address (only with --http). Default: 127.0.0.1 (loopback). Use 0.0.0.0 to expose to all interfaces.',
+    '127.0.0.1',
+  )
+  .option(
+    '--auth-token <token>',
+    'Require this bearer token in the Authorization header (only with --http); may also be set via the GITNEXUS_MCP_AUTH_TOKEN env var. Required for a non-loopback bind (--host 0.0.0.0/::), which otherwise refuses to start.',
+  )
   .action(createLbugLazyAction(() => import('./mcp.js'), 'mcpCommand'));
 
 program
@@ -145,6 +179,7 @@ program
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
+  .option('--branch <name>', 'Delete only the named branch index (not the primary)')
   .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
@@ -216,6 +251,7 @@ program
   .command('query <search_query>')
   .description('Search the knowledge graph for execution flows related to a concept')
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-c, --context <text>', 'Task context to improve ranking')
   .option('-g, --goal <text>', 'What you want to find')
   .option('-l, --limit <n>', 'Max processes to return (default: 5)')
@@ -226,6 +262,7 @@ program
   .command('context [name]')
   .description('360-degree view of a code symbol: callers, callees, processes')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option('--content', 'Include full symbol source code')
@@ -236,6 +273,7 @@ program
   .description('Blast radius analysis: what breaks if you change a symbol')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
   .option(
@@ -253,6 +291,7 @@ program
   .command('cypher <query>')
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -262,7 +301,17 @@ program
   .option('-s, --scope <scope>', 'What to analyze: unstaged, staged, all, or compare', 'unstaged')
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
+
+program
+  .command('check')
+  .description('Run structural checks against the indexed graph')
+  .option('--cycles', 'Detect circular imports and fail when any are found')
+  .option('--json', 'Emit machine-readable JSON')
+  .option('-r, --repo <name>', 'Target repository')
+  .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .action(createLbugLazyAction(() => import('./tool.js'), 'checkCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────
 
